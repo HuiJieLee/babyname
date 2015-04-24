@@ -1,0 +1,413 @@
+Code Test Part 2: Baby Names!
+========================================================
+
+The analysis could be recreated by running the file `run.R` in R by `source("run.R")`.
+The data are from [http://www.ssa.gov/oact/babynames/state/namesbystate.zip](http://www.ssa.gov/oact/babynames/state/namesbystate.zip).
+
+
+Load Data
+----------
+The data set is loaded with the following code.
+```{r}
+# Get the data from the web
+fileUrl <- "http://www.ssa.gov/oact/babynames/state/namesbystate.zip"
+download.file(fileUrl, destfile = "namesbystate.zip")
+unzip("namesbystate.zip")
+# batch read files
+files <- list.files(pattern = ".TXT$")
+babyname <- lapply(files, read.table, sep = ",")
+babyname <- do.call(rbind,babyname)
+# Set column names
+names(babyname) <- c("state", "gender", "year", "name", "count")
+```
+
+For later analysis, I identify states for each region in the United States.
+```{r}
+NorthWest <- c("CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA")
+MidWest <- c("IL", "IN", "MI", "OH", "WI", "IA", "KS", "MN", "MO", "NE", "ND", "SD")
+South <- c("DE", "FL", "GA", "MD", "NC", "SC", "VA", "DC", "WV", "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX")
+West <- c("AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA")
+```
+
+And load all packages needed.
+```{r}
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(reshape2)
+library(ggplot2)
+```
+
+Let's check some summary statistics.
+```{r}
+str(babyname)
+summary(babyname)
+```
+
+
+Descriptive Analysis
+--------------------
+
+### Question1
+Please describe the format of the data files. Can you identify any limitations or distortions of the data?
+The files are in CSV format and each record is separated by a comma. If the record contains comma, CSV format 
+cannot distinguish the record and the delimiter. As described in [Social Security website](http://www.ssa.gov/oact
+/babynames/limits.html), this particular data set contains only names with at least 5 occurrences in each state.
+Therefore, if a state has many unique names with less than 5 occurrences, then the popularity of a name for a year 
+in that state (calculated by the occurrences of that name in a year divided by the total number of occurrences 
+of any name in a year) will be biased. In addition, the data set contains only names with length between 2 and 15.
+And it does not contain names with special characters (e.g. Amélie). It is unclear how special characters are 
+treated in this data set. 
+
+### Question 2
+What is the most popular name of all time? (Of either gender.)
+This can be done by apply the `sum` function to count of names by each name.
+```{r}
+head(sort(tapply(babyname$count, babyname$name, sum), decreasing = TRUE))
+```
+The most popular name of all time is James with 4,942,431 occurrences, followed by John with 4,834,422 occurrences.
+
+### Question 3
+What is the most gender ambiguous name in 2013? 1945?
+I wrote a function to answer this quesiton. This function compute the proportion of female/male for a given 
+name. The proportion of female for a given name is called propF in the function. To compare gender ratio, 
+I compute the absolute difference between propF and 0.5, where 0.5 is the case when equal number of male/female
+have the given name. This absolute difference is called deviance in the function, and the smaller the deviance,
+the more gender-neutral the name is (more gender ambiguous).
+```{r}
+genderNeutral <- function(data, year) {
+  #subset data
+  data <- data[(data$year == year),]
+  #combine counts from different states and drop year
+  data <- aggregate(data$count, by = list(data$year, data$name, data$gender), FUN = sum)
+  data <- data[,-1]
+  names(data) <- c("name", "gender", "count")
+  # spread the data for two gender level
+  byName <- spread(data, gender, count)
+  # replace NA with 0
+  byName[is.na(byName)] <- 0
+  # create new variable that records proportion of female for each name
+  byName <- mutate(byName, propF = F/(F+M), deviance = abs(F/(F+M) - 0.5))
+  print(head(arrange(byName,deviance, desc(F)), n = 10))
+}
+```    
+
+And then I applied the function to year 1945 and 2013.
+The most gender ambiguous names for 2013 are: 
+```{r}
+genderNeutral(babyname, 2013)
+```
+
+The most gender ambiguous names for 1945 are: 
+```{r}
+genderNeutral(babyname, 1945)
+```
+
+This function can be applied to any given year.
+
+
+### Question 4
+Of the names represented in the data, find the name that has had the largest percentage increase in popularity since 1980. Largest decrease?
+
+I first created a new data set **allYear** that contains year, name, count, total number of names for the year,
+and proportion of the name relative to all names in that year. The last variable `prop` reflects the popularity
+of a name in that year. The higher the proportion, the more popular the name in that year.
+```{r}
+# combine counts from different states and different gender
+allYear <- aggregate(babyname$count, by = list(babyname$year, babyname$name), FUN = sum)
+names(allYear) <- c("year", "name", "count")
+
+# compute the total number of names for each year
+countByYear <- ddply(allYear, .(year), summarise, total = sum(count))
+# join allYear with countByYear by "year"
+allYear <- merge(allYear, countByYear, by.x = "year", by.y = "year")
+# create new variable: proportion of a given name relative to all names in that year
+allYear <- mutate(allYear, prop = count / total)
+```
+
+And let's take a look at *allYear*.
+```{r}
+head(allYear)
+```
+
+Now let's compare the popularity of names in 1980 and 2013.
+I select year 1980 and 2013 from *allYear*, and inner join these two data sets by name.
+This will only keep names that are present in both years.
+Then I create a new variable `prop.diff` that computes the difference between popularity.
+
+```{r}
+# compute differences of prop between 1980 and 2013 for each name.
+year1980 <- allYear[(allYear$year == 1980),]
+year2013 <- allYear[(allYear$year == 2013),]
+# inner join two data sets using name
+combineTable <- merge(year1980, year2013, by.x = "name", by.y = "name")
+combineTable <- mutate(combineTable, prop.diff = prop.y - prop.x)
+```
+
+The top 10 names that has had the largest percentage increase in popularity since 1980 are:
+```{r}
+# Top 10 names increase in popularity
+head(arrange(combineTable, desc(prop.diff)), n = 10)
+```
+
+And the top 10 names that has had the largest percentage decrease in popularity since 1980 are:
+```{r}
+# Top 10 names decrease in popularity
+head(arrange(combineTable, desc(-prop.diff)), n = 10)
+```
+
+### Question 5
+Can you identify names that may have had an even larger increase or decrease in popularity?
+
+Utilizing the *allYear* data set, we can repeat the same procedure in 4. 
+Now let's compare year 1910 and 2013.
+```{r}
+year1910 <- allYear[(allYear$year == 1910),]
+# inner join two data sets using name
+combineTable2 <- merge(year1910, year2013, by.x = "name", by.y = "name")
+combineTable2 <- mutate(combineTable2, prop.diff = prop.y - prop.x)
+```
+
+The top 10 names that has had the largest percentage increase in popularity since 1910 are:
+```{r}
+head(arrange(combineTable2, desc(prop.diff)), n = 10)
+topNameIncrease <- arrange(combineTable2, desc(prop.diff))$name[1:10]
+```
+The largest percentage increase in popularity since 1910 is smaller than that since 1980.
+
+Let's check the top 10 names that has had the largest percentage decrease in popularity since 1910.
+```{r}
+head(arrange(combineTable2, desc(-prop.diff)), n = 10)
+topNameDecrease <- arrange(combineTable2, desc(-prop.diff))$name[1:10]
+```
+This shows that **Mary**, **Helen** and **John** have had even larger decrease in popularity since 1910 than
+**Jennifer** since 1980.
+
+Now let's try to plot the trend of these top 10 name increase/decrease in popularity.
+In order to do that, I wrote two functions to plot trend in popularity for a given name.
+And the multiplot function is from [Cookbook for R](http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_%28ggplot2%29/).
+```{r}
+## This function plot the trend for a given name
+plotNameTrend <- function(data, name) {
+  nameData <- data[(data$name == name),]
+  g <- ggplot(nameData, aes(year, prop)) + geom_line() + labs(x = "Year", y = "Popularity", title = nameData$name)
+  return(g)
+}
+
+## This function create a multiplot for a list of name using the plotNameTrend() function.
+plotNameList <- function(data, nameList) {
+  plots <- list()
+  for (i in seq(along = nameList)) {
+    g <- plotNameTrend(data, nameList[i])  
+    plots[[i]] <- g
+  }
+  multiplot(plotlist = plots, cols = 2)
+}
+
+# Multiple plot function
+#
+# ggplot objects can be passed in ..., or to plotlist (as a list of ggplot objects)
+# - cols:   Number of columns in layout
+# - layout: A matrix specifying the layout. If present, 'cols' is ignored.
+#
+# If the layout is something like matrix(c(1,2,3,3), nrow=2, byrow=TRUE),
+# then plot 1 will go in the upper left, 2 will go in the upper right, and
+# 3 will go all the way across the bottom.
+#
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+  
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+  
+  numPlots = length(plots)
+  
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                     ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+  
+  if (numPlots==1) {
+    print(plots[[1]])
+    
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+Then we can check the trend of those top 10 names that have had the largest percentage increase/decrease in
+popularity.
+```{r}
+# drop count and total
+propAllYear <- select(allYear, -count, -total)
+
+plotNameList(propAllYear, topNameIncrease)
+plotNameList(propAllYear, topNameDecrease)
+```
+
+Onward to Insight!
+------------------
+There are many interesting questions can be asked for this data set. Here I tried to address some of them.
+
+1. Do people prefer longer names nowadays?
+
+To answer this question, I utilize the **propAllYear** data to create a new data set **nameLength** that record
+the popularity for each name length for each year
+
+```{r}
+propAllYear$name <- as.character(propAllYear$name)
+# create new variable: length of each name
+nameLength <- mutate(propAllYear, nchar = nchar(name))
+# delete name column
+nameLength <- select(nameLength, -name)
+# combine prop for the same length of name for each year
+nameLength <- ddply(nameLength, .(year, nchar), summarise, total = sum(prop))
+head(nameLength)
+```
+
+Then I plot the trend by each number of characters in name. Since the popularity of each name length differs 
+a lot, I also create individual plots.
+```{r}
+# plot the name length trend 
+plots <- list()
+g <- ggplot(nameLength, aes(year, total, group = nchar, color = nchar))
+plots[[1]] <- g + geom_line() + scale_color_gradient2(midpoint = 9, low = "blue", mid = "white", high = "red")
+
+# plot the trend for each name length (easier to check the trend)
+for (i in 2:15) {
+  nameLength_sub <- nameLength[(nameLength$nchar == i),]
+  myTitle <- paste("Name length = ", i)
+  g <- ggplot(nameLength_sub, aes(year, total)) + geom_line() + labs(x = "Year", y = "Popularity", title = myTitle)
+  plots[[i]] <- g
+}
+multiplot(plotlist = plots, cols = 3)
+```
+
+It shows that for very short name (length = 2), the popularity increases from 1925, and decreases around 1955.
+Shorter names seem to decrease in general since 1910, and gradually increase since around 2000.
+Names with length between 4 and 8 are more common than others. 
+And since 1960, longer names seem to increase in popularity, especially length = 9, 11, 12, 13.
+
+2. Are there any differences in name popularity between regions?
+
+I wrote a function to gather the top names for a region in a given year.
+```{r}
+## This function find the top names for a year in a given region.
+topName <- function(data, region, year, top) {
+  temp <- data[(data$state %in% region & data$year == year),]
+  temp <- ddply(temp, .(name), summarise, total = sum(count))
+  temp <- arrange(temp, desc(total))[1:top,]
+  return(temp)
+}
+```
+
+Then let's find the top 5 names in 2013 for each region.
+```{r}
+top5_NW2013 <- topName(babyname, NorthWest, 2013, 5)
+top5_MW2013 <- topName(babyname, MidWest, 2013, 5)
+top5_S2013 <- topName(babyname, South, 2013, 5)
+top5_W2013 <- topName(babyname, West, 2013, 5)
+
+region <- c("NorthWest", "MidWest", "South", "West")
+plots <- list()
+tops <- list(top5_NW2013, top5_MW2013, top5_S2013, top5_W2013)
+for (i in seq(along = region)) {
+  myTitle <- region[i]
+  g <- ggplot(tops[[i]], aes(x = factor(name), y = total, fill = name)) + geom_bar(stat = "identity") + labs(x = "Name", y = "Count", title = myTitle)
+  plots[[i]] <- g
+}
+multiplot(plotlist = plots, cols = 2)
+```
+
+**Emma**, **Sophia** are top 5 in all regions. **Isabella** is in top 5 in North West and in West region. 
+Is **Isabella** going to be the next **Sophia**?
+And there are other names (**Liam**, **Olivia**, **Manson**, **Noah**) that are top 5 in two regions. 
+**William** is in top 5 in South region but not in other regions. 
+**Jacaob** is in top 5 in West region but not in other regions.
+
+3. Does New York or California lead the trend of names?
+
+To answer this question, I utilize the previous `topName()` function
+```{r}
+top5_NY <- topName(babyname, "NY", 2013, 5)
+top5_CA <- topName(babyname, "CA", 2013, 5)
+top5_NY
+top5_CA
+```
+The top 2 popular name in New York and California are both Sophia and Jacob.
+Let's check the trend of these names in NY and CA. 
+For comparison, I also find the trend in North Carolina (NC).
+
+First, I write two more functions to compute the popularity of a name in a state and plot trends of name.
+```{r}
+## This function compute the popularity of a name in a state 
+propNameInState <- function(data, state) {
+  temp <- select(data[(data$state == state),], -state)
+
+  # combine counts from different gender
+  temp <- aggregate(temp$count, by = list(temp$year, temp$name), FUN = sum)
+  names(temp) <- c("year", "name", "count")
+  
+  # compute the total number of names for each year in NY
+  temp_countByYear <- ddply(temp, .(year), summarise, total = sum(count))
+  # join allYear with countByYear by "year"
+  temp <- merge(temp, temp_countByYear, by.x = "year", by.y = "year")
+  # create new variable: proportion of a given name relative to all names in that year
+  temp <- mutate(temp , prop = count / total)
+  return(temp)
+}
+
+## This function plot the name trend for three given states.
+plotNameTrendInState <- function(data1, data2, data3, state1, state2, state3, name) {
+  temp1 <- data1[(data1$name == name),]
+  temp1$state <- state1
+  temp2 <- data2[(data2$name == name),]
+  temp2$state <- state2
+  temp3 <- data3[(data3$name == name),]
+  temp3$state <- state3
+  temp <- rbind(temp1, temp2, temp3)
+  
+  myTitle <- paste("Trend in", name)
+  g <- ggplot(temp, aes(year, prop, group = state, color = state)) + geom_line() + labs(x = "Year", y = "Popularity in state", title = myTitle)
+  return(g)
+}
+```
+
+Then I create the plot of trend in Sophia and Jacob for these three states.
+```{r}
+NY_data <- propNameInState(babyname, "NY")
+CA_data <- propNameInState(babyname, "CA")
+NC_data <- propNameInState(babyname, "NC")
+
+plotNameTrendInState(NY_data, CA_data, NC_data, "NY", "CA", "NC", "Sophia")
+plotNameTrendInState(NY_data, CA_data, NC_data, "NY", "CA", "NC", "Jacob")
+```
+
+It seems that the trend of popularity in **Sophia** is quite similar between these three states.
+However, it seems that around 1970, **Jacob** became very popular in California than other two states.
+
+
+There are other questions that I would like to ask. Here are some of them.
+- Can you predict someone's age when all you know is the name?
+- Inspired by Freakonomics which lists the most "white" and most "black" names, I would like to know
+   the most "Asian" names. Are there English names that Asian people prefer?
+- Do parents name their children after celebrity? NCAA MVP?
+- Are there any boys' name that becomes girls' name?
+- How is the prediction of Freaknomics for most popular names of 2015?
