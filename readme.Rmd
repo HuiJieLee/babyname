@@ -1,4 +1,4 @@
-Code Test Part 2: Baby Names!
+Baby Names!
 ========================================================
 
 The analysis could be recreated by running the file `run.R` in R by `source("run.R")`.
